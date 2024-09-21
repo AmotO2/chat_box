@@ -27,30 +27,38 @@ class ChatServer:
                 if not data:
                     break  # Break the loop if no data is received
                 message = pickle.loads(data)
+
                 if message["type"] == "group_message":
                     group = message["group_name"]
-                    self.broadcast_group_message(message["data"], group, client_socket)
+                    username = message.get("username", "Unknown")
+                    self.broadcast_group_message(f"{username}: {message['data']}", group)
+
                 elif message["type"] == "create_group":
                     group_name = message["group_name"]
                     self.groups[group_name] = []  # Create new group
                     self.broadcast_groups()  # Notify all clients about new group
+
                 elif message["type"] == "join_group":
                     group_name = message["group_name"]
                     if group_name in self.groups:
                         self.groups[group_name].append(client_socket)
                     self.broadcast_groups()  # Notify clients
+
                 elif message["type"] == "file_transfer":
-                    self.receive_file(client_socket, message["group_name"], message["filename"])
+                    group_name = message["group_name"]
+                    filename = message["filename"]
+                    username = message.get("username", "Unknown")
+                    self.receive_file(client_socket, group_name, filename, username)
+
             except Exception as e:
                 print(f"Error handling client: {e}")
                 break
 
-    # Clean up the client connection
+        # Clean up the client connection
         self.clients.remove(client_socket)
         client_socket.close()
 
-
-    def receive_file(self, client_socket, group_name, filename):
+    def receive_file(self, client_socket, group_name, filename, username):
         """Receive a file from the client and broadcast it."""
         file_size = int.from_bytes(client_socket.recv(8), 'big')  # Receive file size
         file_data = b''
@@ -64,16 +72,33 @@ class ChatServer:
         with open(file_path, 'wb') as f:
             f.write(file_data)
 
-        # Broadcast the file to the group
-        self.broadcast_group_message(file_data, group_name, is_file=True, filename=filename)
+        # Broadcast the file to the group with the sender's username
+        self.broadcast_group_message(
+            f"File received from {username}: {filename}", group_name, is_file=True, file_data=file_data, filename=filename
+        )
 
-    def broadcast_group_message(self, message, group_name):
+    def broadcast_group_message(self, message, group_name, is_file=False, file_data=None, filename=None):
+        """Broadcast message or file to all clients in the group."""
         if group_name in self.groups:
             for client in self.groups[group_name]:
                 try:
-                    client.send(pickle.dumps({"type": "group_message", "data": message, "group_name": group_name}))
+                    if is_file:
+                        # If it's a file, notify clients and then send the file
+                        client.send(pickle.dumps({
+                            "type": "file_transfer",
+                            "group_name": group_name,
+                            "filename": filename
+                        }))
+                        client.send(len(file_data).to_bytes(8, 'big'))  # Send file size
+                        client.sendall(file_data)  # Send file data
+                    else:
+                        client.send(pickle.dumps({
+                            "type": "group_message",
+                            "data": message,
+                            "group_name": group_name
+                        }))
                 except Exception as e:
-                    print(f"Error sending message: {e}")
+                    print(f"Error sending message or file: {e}")
 
     def start(self):
         print("Server started...")
@@ -82,6 +107,7 @@ class ChatServer:
             print("Client connected")
             self.clients.append(client_socket)
             threading.Thread(target=self.handle_client, args=(client_socket,)).start()
+
 
 if __name__ == "__main__":
     server = ChatServer('127.0.0.1', 9999)
